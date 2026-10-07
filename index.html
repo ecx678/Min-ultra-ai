@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Qwen3 Local</title>
+<style>
+*{box-sizing:border-box}
+:root{--bg:#0b0d10;--panel:#11151a;--panel2:#181d24;--border:#252b34;--text:#f2f4f7;--muted:#8993a1;--accent:#fff}
+body{margin:0;height:100vh;background:var(--bg);color:var(--text);font-family:Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+.app{height:100%;display:flex;flex-direction:column}
+header{height:64px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;padding:0 24px}
+.logo{font-weight:700;font-size:17px}.model{font-size:11px;color:var(--muted);margin-top:2px}
+.status{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+.dot{width:8px;height:8px;border-radius:50%;background:#f59e0b}.ready{background:#34d399}.error{background:#fb7185}
+#chat{flex:1;overflow:auto;padding:35px 20px 155px}
+.empty{height:100%;display:grid;place-items:center;text-align:center}
+.empty h1{font-size:42px;margin:0 0 10px;letter-spacing:-1.5px}
+.empty p{color:var(--muted);margin:0}
+.message{max-width:820px;margin:0 auto 30px}
+.role{font-size:12px;color:var(--muted);margin-bottom:8px}
+.bubble{white-space:pre-wrap;word-wrap:break-word;font-size:15px;line-height:1.7}
+.user .bubble{background:var(--panel2);border:1px solid var(--border);padding:13px 16px;border-radius:15px}
+.thinking{color:#8b95a3;border-left:2px solid #3a424d;padding-left:13px;font-size:13px}
+.composer{position:fixed;left:0;right:0;bottom:0;padding:35px 20px 18px;background:linear-gradient(transparent,var(--bg) 28%)}
+.input-wrap{max-width:820px;margin:auto;border:1px solid var(--border);background:var(--panel);border-radius:17px;padding:9px;display:flex;gap:8px;box-shadow:0 12px 45px #0009}
+textarea{flex:1;background:transparent;border:0;outline:0;color:var(--text);resize:none;padding:10px;font:inherit;min-height:46px;max-height:180px}
+button{border:0;border-radius:12px;background:#f1f3f5;color:#111;padding:0 17px;font-weight:700;cursor:pointer}
+button:disabled{opacity:.4;cursor:not-allowed}
+.bottom{max-width:820px;margin:7px auto 0;display:flex;justify-content:space-between;color:var(--muted);font-size:11px}
+.clear{background:none;color:var(--muted);padding:3px}
+@media(max-width:600px){header{padding:0 15px}.model{display:none}.empty h1{font-size:34px}}
+</style>
+</head>
+<body>
+<div class="app">
+<header>
+  <div>
+    <div class="logo">Qwen3 Local</div>
+    <div class="model">Qwen3-4B-Thinking-2507</div>
+  </div>
+  <div class="status"><span id="dot" class="dot"></span><span id="status">Kontrollerar lokal AI…</span></div>
+</header>
+
+<main id="chat">
+  <div class="empty" id="empty">
+    <div>
+      <h1>Qwen3</h1>
+      <p>Din lokala AI. Ingenting skickas till en molntjänst.</p>
+    </div>
+  </div>
+</main>
+
+<div class="composer">
+  <div class="input-wrap">
+    <textarea id="input" rows="1" placeholder="Skriv ett meddelande…"></textarea>
+    <button id="send" disabled>Skicka</button>
+  </div>
+  <div class="bottom">
+    <span>127.0.0.1:8080 · lokal inferens</span>
+    <button class="clear" id="clear">Rensa</button>
+  </div>
+</div>
+</div>
+
+<script>
+const API="http://127.0.0.1:8080";
+const chat=document.getElementById("chat");
+const input=document.getElementById("input");
+const send=document.getElementById("send");
+const empty=document.getElementById("empty");
+const status=document.getElementById("status");
+const dot=document.getElementById("dot");
+let messages=[];
+
+async function checkServer(){
+  try{
+    const r=await fetch(API+"/health");
+    if(!r.ok) throw Error();
+    status.textContent="Lokal AI redo";
+    dot.className="dot ready";
+    send.disabled=false;
+  }catch(e){
+    status.textContent="Starta llama-server";
+    dot.className="dot error";
+    send.disabled=true;
+  }
+}
+setInterval(checkServer,2000);
+checkServer();
+
+function addMessage(role,text){
+  empty.style.display="none";
+  const el=document.createElement("div");
+  el.className="message "+role;
+  const label=document.createElement("div");
+  label.className="role";
+  label.textContent=role==="user"?"Du":"Qwen3";
+  const bubble=document.createElement("div");
+  bubble.className="bubble";
+  bubble.textContent=text;
+  el.append(label,bubble);
+  chat.appendChild(el);
+  chat.scrollTop=chat.scrollHeight;
+  return bubble;
+}
+
+async function sendMessage(){
+  const text=input.value.trim();
+  if(!text || send.disabled)return;
+
+  input.value="";
+  input.style.height="auto";
+  messages.push({role:"user",content:text});
+  addMessage("user",text);
+
+  send.disabled=true;
+  const bubble=addMessage("assistant","");
+  bubble.classList.add("thinking");
+  bubble.textContent="Tänker…";
+
+  try{
+    const response=await fetch(API+"/v1/chat/completions",{
+      method:"POST",
+      headers:{"Content-Type":"application/json"},
+      body:JSON.stringify({
+        messages:messages,
+        temperature:0.6,
+        top_p:0.95,
+        max_tokens:4096,
+        stream:true
+      })
+    });
+
+    if(!response.ok) throw new Error(await response.text());
+
+    const reader=response.body.getReader();
+    const decoder=new TextDecoder();
+    let buffer="",answer="";
+    bubble.classList.remove("thinking");
+    bubble.textContent="";
+
+    while(true){
+      const {value,done}=await reader.read();
+      if(done)break;
+      buffer+=decoder.decode(value,{stream:true});
+      const lines=buffer.split("\n");
+      buffer=lines.pop();
+
+      for(const line of lines){
+        if(!line.startsWith("data:"))continue;
+        const data=line.slice(5).trim();
+        if(data==="[DONE]")continue;
+        try{
+          const json=JSON.parse(data);
+          const token=json.choices?.[0]?.delta?.content||"";
+          answer+=token;
+          bubble.textContent=answer;
+          chat.scrollTop=chat.scrollHeight;
+        }catch{}
+      }
+    }
+
+    messages.push({role:"assistant",content:answer});
+  }catch(e){
+    bubble.classList.remove("thinking");
+    bubble.textContent="Kunde inte ansluta till llama-server.\n\n"+e.message;
+    messages.pop();
+  }finally{
+    send.disabled=false;
+    input.focus();
+  }
+}
+
+send.onclick=sendMessage;
+
+input.addEventListener("keydown",e=>{
+  if(e.key==="Enter"&&!e.shiftKey){
+    e.preventDefault();
+    sendMessage();
+  }
+});
+
+input.addEventListener("input",()=>{
+  input.style.height="auto";
+  input.style.height=Math.min(input.scrollHeight,180)+"px";
+});
+
+document.getElementById("clear").onclick=()=>{
+  messages=[];
+  chat.innerHTML="";
+  chat.appendChild(empty);
+  empty.style.display="grid";
+};
+</script>
+</body>
+</html>
